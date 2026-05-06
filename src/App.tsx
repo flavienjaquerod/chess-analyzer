@@ -328,11 +328,13 @@ export function App() {
     const chess = new Chess(position);
 
     if (selectedSquare) {
-      const move = chess.move({
-        from: selectedSquare,
-        to: square,
-        promotion: "q"
-      });
+      const piece = chess.get(square);
+      if (piece && piece.color === chess.turn() && square !== selectedSquare) {
+        setSelectedSquare(square);
+        return;
+      }
+
+      const move = tryMove(chess, selectedSquare, square);
 
       if (move) {
         const fen = chess.fen();
@@ -348,7 +350,7 @@ export function App() {
     }
 
     const piece = chess.get(square);
-    setSelectedSquare(piece ? square : null);
+    setSelectedSquare(piece && piece.color === chess.turn() ? square : null);
   }
 
   function retryMove(review?: ReviewedPly) {
@@ -463,6 +465,7 @@ export function App() {
               boardWidth={boardSize}
               arePiecesDraggable
               onPieceDrop={onPieceDrop}
+              onPieceClick={(_, square) => onSquareClick(square)}
               onSquareClick={onSquareClick}
               customArrows={arrows}
               customSquareStyles={boardHighlights}
@@ -573,8 +576,6 @@ export function App() {
               <label>Depth {depth}</label>
               <input type="range" min="8" max="23" value={depth} onChange={(event) => setDepth(Number(event.target.value))} />
             </div>
-            <p className="depth-note">Higher depth is slower. Depth 18-23 is best for single positions, not full-game review.</p>
-
             <button className="primary" onClick={analyzeGame} disabled={!parsed || analyzing}>
               {analyzing ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
               {analyzing ? `Analyzing ${progress}` : "Analyze Game"}
@@ -669,6 +670,18 @@ export function App() {
       </section>
     </main>
   );
+}
+
+function tryMove(chess: Chess, from: Square, to: Square) {
+  try {
+    return chess.move({
+      from,
+      to,
+      promotion: "q"
+    });
+  } catch {
+    return null;
+  }
 }
 
 function bestMoveArrows(analysis?: PositionAnalysis | null, hoveredMove?: string | null): Arrow[] {
@@ -833,7 +846,7 @@ function squareHighlights(
   for (const square of legalTargets) {
     styles[square] = {
       ...(styles[square] ?? {}),
-      backgroundImage: `${styles[square]?.backgroundImage ? `${styles[square]?.backgroundImage}, ` : ""}radial-gradient(circle, rgba(31, 111, 80, 0.48) 18%, transparent 20%)`
+      backgroundImage: `${styles[square]?.backgroundImage ? `${styles[square]?.backgroundImage}, ` : ""}radial-gradient(circle, rgba(31, 111, 80, 0.42) 18%, transparent 20%)`
     };
   }
 
