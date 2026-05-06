@@ -21,6 +21,7 @@ export type Ply = {
   color: "w" | "b";
   san: string;
   uci: string;
+  clock?: string;
   beforeFen: string;
   afterFen: string;
 };
@@ -40,6 +41,7 @@ export function parsePgn(pgn: string) {
   chess.loadPgn(pgn, { strict: false });
   const headers = chess.header();
   const moves = chess.history({ verbose: true }) as Move[];
+  const commentsByFen = new Map(chess.getComments().map(({ fen, comment }) => [fen, comment]));
   const replay = new Chess();
   const plies: Ply[] = [];
 
@@ -53,6 +55,7 @@ export function parsePgn(pgn: string) {
       color: move.color,
       san: played.san,
       uci: `${played.from}${played.to}${played.promotion ?? ""}`,
+      clock: clockFromComment(commentsByFen.get(afterFen)),
       beforeFen,
       afterFen
     });
@@ -88,6 +91,12 @@ function parseOptionalRating(value?: string | null) {
   if (!value) return undefined;
   const rating = Number(value);
   return Number.isFinite(rating) ? rating : undefined;
+}
+
+function clockFromComment(comment?: string) {
+  const clock = comment?.match(/\[%clk\s+([^\]]+)\]/i)?.[1];
+  if (!clock) return undefined;
+  return clock.replace(/\.\d+$/, "");
 }
 
 export function toDisplayEval(cp?: number) {

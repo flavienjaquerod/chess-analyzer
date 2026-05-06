@@ -110,9 +110,10 @@ export function App() {
   const evalNow = currentAnalysis?.lines[0]?.whiteScoreCp;
   const arrows = useMemo(() => bestMoveArrows(currentAnalysis, hoveredBestMove), [currentAnalysis, hoveredBestMove]);
   const legalTargets = useMemo(() => legalMoveTargets(position, selectedSquare), [position, selectedSquare]);
+  const checkmateSquare = useMemo(() => checkmateKingSquare(position), [position]);
   const boardHighlights = useMemo(
-    () => squareHighlights(activeReview, currentAnalysis, selectedSquare, legalTargets, hoveredBestMove),
-    [activeReview, currentAnalysis, selectedSquare, legalTargets, hoveredBestMove]
+    () => squareHighlights(activeReview, selectedSquare, legalTargets, checkmateSquare),
+    [activeReview, selectedSquare, legalTargets, checkmateSquare]
   );
   const recap = useMemo(() => reviewRecap(reviews), [reviews]);
   const playerRecap = useMemo(() => reviewRecapByColor(reviews), [reviews]);
@@ -473,6 +474,7 @@ export function App() {
               customLightSquareStyle={{ backgroundColor: "#ebecd0" }}
             />
           </div>
+          <EvalGraph points={evalPoints} currentPly={currentPly} onSelectPly={goToPly} />
         </section>
 
         <section className="review-strip">
@@ -493,7 +495,6 @@ export function App() {
             <span><Clock size={15} />{selectedTempo || "Imported game"}</span>
             <span>{selected?.date || "No date"} · {selected?.result ?? "*"}</span>
           </div>
-          <EvalGraph points={evalPoints} currentPly={currentPly} onSelectPly={goToPly} />
 
           <div className="panel board-moves">
             <h2>Moves</h2>
@@ -505,7 +506,8 @@ export function App() {
                   onClick={() => goToPly(index + 1)}
                 >
                   <span>{ply.color === "w" ? `${ply.moveNumber}.` : ""}</span>
-                  {ply.san}
+                  <strong>{ply.san}</strong>
+                  {ply.clock && <small>{formatMoveClock(ply.clock)}</small>}
                   {reviews[index]?.label && <CategoryIcon label={reviews[index].label} size={13} />}
                 </button>
               ))}
@@ -818,10 +820,9 @@ function playerReportText(rating: number, badMoves: number, bestMoves: number) {
 
 function squareHighlights(
   review?: ReviewedPly,
-  analysis?: PositionAnalysis | null,
   selectedSquare?: Square | null,
   legalTargets: Square[] = [],
-  hoveredMove?: string | null
+  checkmateSquare?: Square | null
 ) {
   const styles: Partial<Record<Square, Record<string, string | number>>> = {};
 
@@ -850,7 +851,35 @@ function squareHighlights(
     };
   }
 
+  if (checkmateSquare) {
+    styles[checkmateSquare] = {
+      ...(styles[checkmateSquare] ?? {}),
+      animation: "matePulse 0.9s ease-in-out infinite",
+      backgroundColor: "rgba(224, 49, 49, 0.62)",
+      boxShadow: "inset 0 0 0 5px rgba(255, 255, 255, 0.78), 0 0 22px rgba(224, 49, 49, 0.9)"
+    };
+  }
+
   return styles;
+}
+
+function checkmateKingSquare(fen: string) {
+  if (!fen || fen === "start") return null;
+  try {
+    const chess = new Chess(fen);
+    if (!chess.isCheckmate()) return null;
+    const matedColor = chess.turn();
+    for (const file of "abcdefgh") {
+      for (let rank = 1; rank <= 8; rank += 1) {
+        const square = `${file}${rank}` as Square;
+        const piece = chess.get(square);
+        if (piece?.type === "k" && piece.color === matedColor) return square;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 function legalMoveTargets(fen: string, square: Square | null) {
@@ -944,8 +973,8 @@ function EvalGraph({
   currentPly: number;
   onSelectPly: (ply: number) => void;
 }) {
-  const width = 640;
-  const height = 96;
+  const width = 760;
+  const height = 124;
   const clamped = points.map((point) => ({ ...point, value: Math.max(-600, Math.min(600, point.value)) }));
   const maxPly = Math.max(1, clamped[clamped.length - 1]?.ply ?? 1);
   const currentX = (currentPly / maxPly) * width;
@@ -957,37 +986,46 @@ function EvalGraph({
         viewBox={`0 0 ${width} ${height}`}
         role="img"
         aria-label="Evaluation graph"
+        shapeRendering="geometricPrecision"
         onClick={(event) => {
           const rect = event.currentTarget.getBoundingClientRect();
           const x = event.clientX - rect.left;
           onSelectPly(Math.round((x / rect.width) * maxPly));
         }}
       >
-        {clamped.slice(1).map((point, index) => {
-          const previous = clamped[index];
-          const x = (previous.ply / maxPly) * width;
-          const nextX = (point.ply / maxPly) * width;
-          const whiteHeight = whiteShare(point.value) * height;
-          return (
-            <g key={point.ply}>
-              <rect x={x} y="0" width={Math.max(1, nextX - x)} height={height - whiteHeight} className="graph-black" />
-              <rect x={x} y={height - whiteHeight} width={Math.max(1, nextX - x)} height={whiteHeight} className="graph-white" />
-            </g>
-          );
-        })}
-        <line x1="0" y1={height / 2} x2={width} y2={height / 2} className="graph-zero" />
+        <defs>
+          <clipPath id="evalGraphClip">
+            <rect x="0" y="0" width={width} height={height} rx="14" />
+          </clipPath>
+        </defs>
+        <g clipPath="url(#evalGraphClip)">
+          {clamped.slice(1).map((point, index) => {
+            const previous = clamped[index];
+            const x = (previous.ply / maxPly) * width;
+            const nextX = (point.ply / maxPly) * width;
+            const segmentWidth = Math.max(1, nextX - x) + 0.75;
+            const whiteHeight = whiteShare(point.value) * height;
+            return (
+              <g key={point.ply}>
+                <rect x={Math.max(0, x - 0.35)} y="0" width={segmentWidth} height={height - whiteHeight} className="graph-black" />
+                <rect x={Math.max(0, x - 0.35)} y={height - whiteHeight} width={segmentWidth} height={whiteHeight} className="graph-white" />
+              </g>
+            );
+          })}
+          <line x1="0" y1={height / 2} x2={width} y2={height / 2} className="graph-zero" />
+        </g>
         {markers.map((point) => (
           <circle
             key={`${point.ply}-${point.label}`}
             cx={(point.ply / maxPly) * width}
             cy={height - whiteShare(point.value) * height}
-            r="5"
+            r="5.5"
             fill={solidLabelColor(point.label)}
-            stroke="white"
-            strokeWidth="1.5"
+            stroke="var(--panel)"
+            strokeWidth="2"
           />
         ))}
-        <line x1={currentX} y1="0" x2={currentX} y2={height} className="graph-current" />
+        <line x1={currentX} y1="4" x2={currentX} y2={height - 4} className="graph-current" />
       </svg>
     </div>
   );
@@ -1123,6 +1161,13 @@ function formatClock(value: string) {
   const seconds = Number(base) % 60;
   const main = minutes ? `${minutes}${seconds ? `:${String(seconds).padStart(2, "0")}` : ""}` : `${seconds}s`;
   return increment ? `${main}+${increment}` : main;
+}
+
+function formatMoveClock(value: string) {
+  const parts = value.split(":");
+  if (parts.length <= 2) return value;
+  const [hours, minutes, seconds] = parts;
+  return hours === "0" ? `${minutes}:${seconds.padStart(2, "0")}` : value;
 }
 
 function pieceSymbolForMove(fen: string, uci?: string) {

@@ -314,6 +314,9 @@ textarea {
 
 .board-area {
   align-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   min-width: 0;
 }
 
@@ -959,11 +962,27 @@ textarea {
   background: transparent;
   border-radius: 6px;
   color: var(--text);
-  display: flex;
+  display: grid;
   gap: 7px;
+  grid-template-columns: 26px minmax(0, 1fr) auto 16px;
   min-height: 34px;
   padding: 7px 8px;
   text-align: left;
+}
+
+.move-grid button strong {
+  font-size: 13px;
+  font-weight: 800;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.move-grid button small {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 .move-pill.brilliant {
@@ -1009,33 +1028,42 @@ textarea {
 .eval-graph {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 14px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  margin: 0 auto;
   margin-top: 0;
-  padding: 8px;
+  padding: 10px;
+  width: min(100%, 800px);
 }
 
 .eval-graph svg {
   display: block;
-  height: 76px;
+  height: 106px;
+  overflow: visible;
   width: 100%;
 }
 
 .graph-white {
-  fill: #f8f9fa;
+  fill: #f2f4ef;
+  transition: height 180ms ease, y 180ms ease;
 }
 
 .graph-black {
-  fill: #1f2421;
+  fill: #1d211f;
+  transition: height 180ms ease;
 }
 
 .graph-zero {
   stroke: var(--border-strong);
+  stroke-dasharray: 4 6;
+  stroke-linecap: round;
   stroke-width: 1;
 }
 
 .graph-current {
   stroke: #e03131;
-  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-width: 3;
 }
 
 .eval-graph svg {
@@ -1054,7 +1082,7 @@ textarea {
 }
 
 .move-grid button svg {
-  margin-left: auto;
+  justify-self: end;
 }
 
 .move-grid span {
@@ -1069,6 +1097,19 @@ textarea {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes matePulse {
+  0%,
+  100% {
+    filter: saturate(1);
+    opacity: 0.78;
+  }
+
+  50% {
+    filter: saturate(1.4);
+    opacity: 1;
   }
 }
 
@@ -1087,8 +1128,7 @@ textarea {
   }
 
   .review-strip .move-controls,
-  .review-strip .board-meta,
-  .review-strip .eval-graph {
+  .review-strip .board-meta {
     grid-column: 1;
   }
 
