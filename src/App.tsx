@@ -23,6 +23,8 @@ import {
   Sun,
   ThumbsUp,
   Timer,
+  TrendingDown,
+  TrendingUp,
   UploadCloud,
   XOctagon,
   Zap
@@ -56,6 +58,7 @@ const START_FEN = new Chess().fen();
 
 export function App() {
   const [username, setUsername] = useState("");
+  const [page, setPage] = useState<"review" | "recap">("review");
   const [games, setGames] = useState<GameSummary[]>([]);
   const [gameFilter, setGameFilter] = useState("all");
   const [selected, setSelected] = useState<GameSummary | null>(() => gameSummaryFromPgn(SAMPLE_PGN, "import", "sample"));
@@ -196,7 +199,7 @@ export function App() {
     setError("");
     setLoadingGames(true);
     try {
-      const loaded = await fetchChessComGames(username, 24);
+      const loaded = await fetchChessComGames(username, 160);
       setGames(loaded);
       if (loaded[0]) setSelected(loaded[0]);
     } catch (err) {
@@ -462,9 +465,13 @@ export function App() {
       <section className="topbar">
         <div>
           <p className="eyebrow">Stockfish review</p>
-          <h1>Chess Review</h1>
+          <h1>{page === "review" ? "Chess Review" : "Player Recap"}</h1>
         </div>
         <div className="top-actions">
+          <div className="page-switch">
+            <button className={page === "review" ? "active" : ""} onClick={() => setPage("review")}>Review</button>
+            <button className={page === "recap" ? "active" : ""} onClick={() => setPage("recap")}>Recap</button>
+          </div>
           <button className="icon-button" onClick={() => setDarkMode((value) => !value)} aria-label="Toggle dark mode">
             {darkMode ? <Sun size={18} /> : <Moon size={18} />}
           </button>
@@ -479,6 +486,19 @@ export function App() {
         </div>
       </section>
 
+      {page === "recap" ? (
+        <RecapPage
+          username={username}
+          setUsername={setUsername}
+          games={games}
+          loadingGames={loadingGames}
+          loadChessComGames={loadChessComGames}
+          onReviewGame={(game) => {
+            setSelected(game);
+            setPage("review");
+          }}
+        />
+      ) : (
       <section className="workspace">
         <aside className="sidebar">
           <div className="panel">
@@ -835,8 +855,292 @@ export function App() {
           )}
         </aside>
       </section>
+      )}
     </main>
   );
+}
+
+function RecapPage({
+  username,
+  setUsername,
+  games,
+  loadingGames,
+  loadChessComGames,
+  onReviewGame
+}: {
+  username: string;
+  setUsername: (username: string) => void;
+  games: GameSummary[];
+  loadingGames: boolean;
+  loadChessComGames: () => void | Promise<void>;
+  onReviewGame: (game: GameSummary) => void;
+}) {
+  const recap = useMemo(() => buildPlayerRecap(games, username), [games, username]);
+
+  return (
+    <section className="recap-page">
+      <div className="panel recap-fetch">
+        <div>
+          <h2>Player Recap</h2>
+          <p className="muted">Fetch a Chess.com username to see rating movement, best and worst days, and opening results.</p>
+        </div>
+        <div className="input-row">
+          <input
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void loadChessComGames();
+            }}
+            placeholder="Chess.com username"
+          />
+          <button onClick={() => void loadChessComGames()} disabled={loadingGames}>
+            {loadingGames ? <Loader2 className="spin" size={18} /> : <Search size={18} />}
+          </button>
+        </div>
+      </div>
+
+      {!recap.games.length ? (
+        <div className="panel empty-recap">
+          <BarChart3 size={28} />
+          <p>Fetch games first, then this page will summarize the player history.</p>
+        </div>
+      ) : (
+        <>
+          <div className="recap-hero-grid">
+            <div className="panel metric-card">
+              <span>Player</span>
+              <strong>{recap.player}</strong>
+              <em>{recap.games.length} recent games</em>
+            </div>
+            <div className="panel metric-card">
+              <span>Current Elo</span>
+              <strong>{recap.currentRating || "-"}</strong>
+              <em>{recap.firstRating ? `${signed(recap.totalDelta)} across sample` : "No rating data"}</em>
+            </div>
+            <div className="panel metric-card">
+              <span>Score</span>
+              <strong>{Math.round(recap.scoreRate * 100)}%</strong>
+              <em>{recap.wins}W {recap.draws}D {recap.losses}L</em>
+            </div>
+            <div className="panel metric-card">
+              <span>Best Opening</span>
+              <strong>{recap.bestOpening?.name ?? "-"}</strong>
+              <em>{recap.bestOpening ? `${Math.round(recap.bestOpening.scoreRate * 100)}% over ${recap.bestOpening.games} games` : "Need more games"}</em>
+            </div>
+          </div>
+
+          <div className="recap-layout">
+            <div className="panel trend-panel">
+              <div className="panel-title-row">
+                <h2>Elo Evolution</h2>
+                <span className={recap.totalDelta >= 0 ? "trend-positive" : "trend-negative"}>
+                  {recap.totalDelta >= 0 ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
+                  {signed(recap.totalDelta)}
+                </span>
+              </div>
+              <RatingTrend points={recap.ratingPoints} />
+            </div>
+
+            <div className="panel swing-panel">
+              <h2>Biggest Days</h2>
+              <div className="swing-list">
+                {recap.daySwings.slice(0, 6).map((day) => (
+                  <button key={day.date} onClick={() => day.game && onReviewGame(day.game)}>
+                    <span>{day.date}</span>
+                    <strong className={day.delta >= 0 ? "trend-positive" : "trend-negative"}>{signed(day.delta)}</strong>
+                    <em>{day.games} games</em>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="panel openings-panel">
+            <h2>Openings</h2>
+            <div className="opening-table">
+              <div className="opening-head">
+                <span>Opening</span>
+                <span>Games</span>
+                <span>Score</span>
+                <span>W-D-L</span>
+              </div>
+              {recap.openings.map((opening) => (
+                <button key={opening.name} onClick={() => opening.example && onReviewGame(opening.example)}>
+                  <strong>{opening.name}</strong>
+                  <span>{opening.games}</span>
+                  <span>{Math.round(opening.scoreRate * 100)}%</span>
+                  <span>{opening.wins}-{opening.draws}-{opening.losses}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function RatingTrend({ points }: { points: Array<{ date: string; rating: number }> }) {
+  const width = 760;
+  const height = 220;
+  if (points.length < 2) {
+    return <p className="muted">Not enough rated games to draw a trend.</p>;
+  }
+
+  const min = Math.min(...points.map((point) => point.rating));
+  const max = Math.max(...points.map((point) => point.rating));
+  const range = Math.max(1, max - min);
+  const path = points
+    .map((point, index) => {
+      const x = (index / Math.max(1, points.length - 1)) * width;
+      const y = height - ((point.rating - min) / range) * (height - 28) - 14;
+      return `${index ? "L" : "M"} ${x.toFixed(1)} ${y.toFixed(1)}`;
+    })
+    .join(" ");
+
+  return (
+    <div className="rating-trend">
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Rating trend">
+        <line x1="0" x2={width} y1={height - 18} y2={height - 18} className="trend-axis" />
+        <path d={path} className="trend-line" />
+        {points.map((point, index) => {
+          const x = (index / Math.max(1, points.length - 1)) * width;
+          const y = height - ((point.rating - min) / range) * (height - 28) - 14;
+          return <circle key={`${point.date}-${index}`} cx={x} cy={y} r="4" className="trend-dot" />;
+        })}
+      </svg>
+      <div className="trend-labels">
+        <span>{points[0]?.date}</span>
+        <strong>{min}-{max}</strong>
+        <span>{points[points.length - 1]?.date}</span>
+      </div>
+    </div>
+  );
+}
+
+function buildPlayerRecap(games: GameSummary[], username: string) {
+  const player = findRecapPlayer(games, username);
+  const playerGames = games
+    .filter((game) => isPlayerGame(game, player))
+    .slice()
+    .sort((a, b) => gameTime(a) - gameTime(b));
+  const records = playerGames.map((game) => gameRecordForPlayer(game, player)).filter((record): record is PlayerGameRecord => Boolean(record));
+  const ratingPoints = records.filter((record) => record.rating !== undefined).map((record) => ({ date: record.date, rating: record.rating! }));
+  const openings = openingStats(records);
+  const wins = records.filter((record) => record.score === 1).length;
+  const draws = records.filter((record) => record.score === 0.5).length;
+  const losses = records.filter((record) => record.score === 0).length;
+  const daySwings = daySwingStats(records);
+  const firstRating = ratingPoints[0]?.rating ?? 0;
+  const currentRating = ratingPoints[ratingPoints.length - 1]?.rating ?? 0;
+
+  return {
+    player,
+    games: playerGames,
+    records,
+    ratingPoints,
+    currentRating,
+    firstRating,
+    totalDelta: currentRating && firstRating ? currentRating - firstRating : 0,
+    wins,
+    draws,
+    losses,
+    scoreRate: records.length ? records.reduce((sum, record) => sum + record.score, 0) / records.length : 0,
+    daySwings,
+    openings,
+    bestOpening: openings.filter((opening) => opening.games >= 2).sort((a, b) => b.scoreRate - a.scoreRate || b.games - a.games)[0]
+  };
+}
+
+type PlayerGameRecord = {
+  game: GameSummary;
+  date: string;
+  rating?: number;
+  score: number;
+  opening: string;
+};
+
+function gameRecordForPlayer(game: GameSummary, player: string): PlayerGameRecord | null {
+  const isWhite = game.white.toLowerCase() === player.toLowerCase();
+  const isBlack = game.black.toLowerCase() === player.toLowerCase();
+  if (!isWhite && !isBlack) return null;
+  const score = scoreForResult(game.result, isWhite ? "w" : "b");
+  let opening = "Unknown Opening";
+  try {
+    opening = detectOpening(parsePgn(game.pgn).plies).name;
+  } catch {
+    opening = "Unknown Opening";
+  }
+  return {
+    game,
+    date: game.date || "Unknown",
+    rating: isWhite ? game.whiteElo : game.blackElo,
+    score,
+    opening
+  };
+}
+
+function openingStats(records: PlayerGameRecord[]) {
+  const stats = new Map<string, { name: string; games: number; score: number; wins: number; draws: number; losses: number; example?: GameSummary }>();
+  for (const record of records) {
+    const stat = stats.get(record.opening) ?? { name: record.opening, games: 0, score: 0, wins: 0, draws: 0, losses: 0, example: record.game };
+    stat.games += 1;
+    stat.score += record.score;
+    if (record.score === 1) stat.wins += 1;
+    else if (record.score === 0.5) stat.draws += 1;
+    else stat.losses += 1;
+    stats.set(record.opening, stat);
+  }
+  return [...stats.values()]
+    .map((stat) => ({ ...stat, scoreRate: stat.games ? stat.score / stat.games : 0 }))
+    .sort((a, b) => b.games - a.games || b.scoreRate - a.scoreRate)
+    .slice(0, 10);
+}
+
+function daySwingStats(records: PlayerGameRecord[]) {
+  const byDate = new Map<string, PlayerGameRecord[]>();
+  for (const record of records.filter((item) => item.rating !== undefined)) {
+    byDate.set(record.date, [...(byDate.get(record.date) ?? []), record]);
+  }
+  return [...byDate.entries()]
+    .map(([date, dayRecords]) => ({
+      date,
+      games: dayRecords.length,
+      delta: (dayRecords[dayRecords.length - 1].rating ?? 0) - (dayRecords[0].rating ?? 0),
+      game: dayRecords[Math.max(0, dayRecords.length - 1)]?.game
+    }))
+    .filter((day) => day.delta !== 0)
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+}
+
+function findRecapPlayer(games: GameSummary[], username: string) {
+  const clean = username.trim().replace(/^@/, "").toLowerCase();
+  if (clean) return clean;
+  const counts = new Map<string, number>();
+  for (const game of games) {
+    counts.set(game.white, (counts.get(game.white) ?? 0) + 1);
+    counts.set(game.black, (counts.get(game.black) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
+}
+
+function isPlayerGame(game: GameSummary, player: string) {
+  return Boolean(player) && [game.white.toLowerCase(), game.black.toLowerCase()].includes(player.toLowerCase());
+}
+
+function scoreForResult(result: string, color: "w" | "b") {
+  if (result === "1/2-1/2") return 0.5;
+  if (result === "1-0") return color === "w" ? 1 : 0;
+  if (result === "0-1") return color === "b" ? 1 : 0;
+  return 0;
+}
+
+function gameTime(game: GameSummary) {
+  return game.date ? new Date(game.date).getTime() : 0;
+}
+
+function signed(value: number) {
+  return value > 0 ? `+${value}` : String(value);
 }
 
 function tryMove(chess: Chess, from: Square, to: Square) {
