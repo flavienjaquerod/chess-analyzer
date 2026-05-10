@@ -1,6 +1,6 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Chessboard } from "react-chessboard";
-import type { Arrow, Square } from "react-chessboard/dist/chessboard/types";
+import type { Arrow, BoardPosition, Piece, Square } from "react-chessboard/dist/chessboard/types";
 import { Chess } from "chess.js";
 import {
   AlertCircle,
@@ -51,6 +51,9 @@ const SAMPLE_PGN = `[Event "Example"]
 
 1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O Be7 6. Re1 b5 7. Bb3 d6 8. c3 O-O 9. h3 1-0`;
 
+const EDIT_PIECES: Piece[] = ["wK", "wQ", "wR", "wB", "wN", "wP", "bK", "bQ", "bR", "bB", "bN", "bP"];
+const START_FEN = new Chess().fen();
+
 export function App() {
   const [username, setUsername] = useState("");
   const [games, setGames] = useState<GameSummary[]>([]);
@@ -71,6 +74,10 @@ export function App() {
   const [retryingMove, setRetryingMove] = useState<ReviewedPly | null>(null);
   const [selectedSquare, setSelectedSquare] = useState<Square | null>(null);
   const [hoveredBestMove, setHoveredBestMove] = useState<string | null>(null);
+  const [editMode, setEditMode] = useState(false);
+  const [editBoard, setEditBoard] = useState<BoardPosition>(() => boardPositionFromFen(START_FEN));
+  const [editTurn, setEditTurn] = useState<"w" | "b">("w");
+  const [editTool, setEditTool] = useState<Piece | "erase">("wP");
   const engineRef = useRef<StockfishClient | null>(null);
   const analysisCacheRef = useRef(new Map<string, PositionAnalysis>());
 
@@ -103,17 +110,23 @@ export function App() {
     return parsed.plies[currentPly - 1]?.afterFen ?? parsed.finalFen;
   }, [parsed, currentPly]);
 
+  const editFen = useMemo(() => fenFromBoardPosition(editBoard, editTurn), [editBoard, editTurn]);
   const position = exploreFen ?? gamePosition;
+  const displayedPosition = editMode ? editFen : position;
+  const boardPosition = editMode ? editBoard : displayedPosition;
   const activeReview = currentPly > 0 ? reviews[currentPly - 1] : undefined;
   const nextReview = currentPly < reviews.length ? reviews[currentPly] : undefined;
-  const currentAnalysis = exploreAnalysis ?? nextReview?.before ?? activeReview?.after;
+  const currentAnalysis = editMode ? exploreAnalysis : exploreAnalysis ?? nextReview?.before ?? activeReview?.after;
   const evalNow = currentAnalysis?.lines[0]?.whiteScoreCp;
   const arrows = useMemo(() => bestMoveArrows(currentAnalysis, hoveredBestMove), [currentAnalysis, hoveredBestMove]);
-  const legalTargets = useMemo(() => legalMoveTargets(position, selectedSquare), [position, selectedSquare]);
-  const checkmateSquare = useMemo(() => checkmateKingSquare(position), [position]);
+  const legalTargets = useMemo(
+    () => (editMode ? editMoveTargets(editBoard, selectedSquare, editTurn) : legalMoveTargets(position, selectedSquare)),
+    [editMode, editBoard, editTurn, position, selectedSquare]
+  );
+  const checkmateSquare = useMemo(() => checkmateKingSquare(displayedPosition), [displayedPosition]);
   const boardHighlights = useMemo(
-    () => squareHighlights(activeReview, selectedSquare, legalTargets, checkmateSquare),
-    [activeReview, selectedSquare, legalTargets, checkmateSquare]
+    () => squareHighlights(editMode ? undefined : activeReview, selectedSquare, legalTargets, checkmateSquare),
+    [editMode, activeReview, selectedSquare, legalTargets, checkmateSquare]
   );
   const recap = useMemo(() => reviewRecap(reviews), [reviews]);
   const playerRecap = useMemo(() => reviewRecapByColor(reviews), [reviews]);
@@ -132,7 +145,7 @@ export function App() {
 
   useEffect(() => {
     setHoveredBestMove(null);
-  }, [position, currentAnalysis]);
+  }, [displayedPosition, currentAnalysis]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -267,9 +280,14 @@ export function App() {
     }
   }
 
-  async function analyzeCurrentPosition(fen = position, target: "game" | "explore" = exploreFen ? "explore" : "game") {
+  async function analyzeCurrentPosition(fen = editMode ? editFen : position, target: "game" | "explore" = editMode || exploreFen ? "explore" : "game") {
     if (!fen || fen === "start") return;
     setError("");
+    const validationError = validateFenForAnalysis(fen);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
     setPositionAnalyzing(true);
     try {
       const result = await analyzeFen(fen);
@@ -286,6 +304,13 @@ export function App() {
   }
 
   function onPieceDrop(sourceSquare: string, targetSquare: string) {
+    if (editMode) {
+      setEditBoard((board) => moveEditPiece(board, sourceSquare as Square, targetSquare as Square));
+      setExploreAnalysis(null);
+      setSelectedSquare(null);
+      return true;
+    }
+
     if (!position || position === "start") return false;
 
     const chess = new Chess(position);
@@ -325,6 +350,48 @@ export function App() {
   }
 
   function onSquareClick(square: Square) {
+    if (editMode) {
+      if (selectedSquare) {
+        const selectedPiece = editBoard[selectedSquare];
+        const clickedPiece = editBoard[square];
+
+        if (selectedPiece === "wK" || selectedPiece === "bK") {
+          if (clickedPiece === `${selectedPiece[0]}R` && canCastleEditor(editBoard, selectedSquare, square)) {
+            setEditBoard((board) => moveEditPiece(board, selectedSquare, square));
+            setExploreAnalysis(null);
+            setSelectedSquare(null);
+            return;
+          }
+        }
+
+        if (clickedPiece && clickedPiece[0] === editTurn && square !== selectedSquare) {
+          setSelectedSquare(square);
+          return;
+        }
+
+        if (editMoveTargets(editBoard, selectedSquare, editTurn).includes(square)) {
+          setEditBoard((board) => moveEditPiece(board, selectedSquare, square));
+          setExploreAnalysis(null);
+          setSelectedSquare(null);
+          return;
+        }
+
+        setSelectedSquare(null);
+        return;
+      }
+
+      const preview = editBoard[square];
+      if (preview && preview[0] === editTurn) {
+        setSelectedSquare(square);
+        return;
+      }
+
+      setEditBoard((board) => applyEditTool(board, square, editTool));
+      setExploreAnalysis(null);
+      setSelectedSquare(null);
+      return;
+    }
+
     if (!position || position === "start") return;
     const chess = new Chess(position);
 
@@ -371,6 +438,23 @@ export function App() {
         ? badMoves.find((index) => index + 1 > currentPly) ?? badMoves[0]
         : [...badMoves].reverse().find((index) => index + 1 < currentPly) ?? badMoves[badMoves.length - 1];
     goToPly(target + 1);
+  }
+
+  function enterEditMode() {
+    setEditBoard(boardPositionFromFen(displayedPosition === "start" ? START_FEN : displayedPosition));
+    setEditTurn(turnFromFen(displayedPosition === "start" ? START_FEN : displayedPosition));
+    setEditMode(true);
+    setExploreFen(null);
+    setExploreAnalysis(null);
+    setSelectedSquare(null);
+    setHoveredBestMove(null);
+  }
+
+  function exitEditMode() {
+    setEditMode(false);
+    setExploreAnalysis(null);
+    setSelectedSquare(null);
+    setHoveredBestMove(null);
   }
 
   return (
@@ -429,6 +513,76 @@ export function App() {
             </div>
           </div>
 
+          <div className="panel editor-panel">
+            <div className="panel-title-row">
+              <h2>Board Editor</h2>
+              <button className="small-button" onClick={editMode ? exitEditMode : enterEditMode}>
+                {editMode ? "Done" : "Edit"}
+              </button>
+            </div>
+            {editMode && (
+              <>
+                <div className="turn-toggle" aria-label="Side to move">
+                  <button
+                    className={editTurn === "w" ? "active" : ""}
+                    onClick={() => {
+                      setEditTurn("w");
+                      setExploreAnalysis(null);
+                    }}
+                  >
+                    White
+                  </button>
+                  <button
+                    className={editTurn === "b" ? "active" : ""}
+                    onClick={() => {
+                      setEditTurn("b");
+                      setExploreAnalysis(null);
+                    }}
+                  >
+                    Black
+                  </button>
+                </div>
+                <div className="piece-palette">
+                  {EDIT_PIECES.map((piece) => (
+                    <button
+                      key={piece}
+                      className={editTool === piece ? "active" : ""}
+                      onClick={() => setEditTool(piece)}
+                      aria-label={`Place ${piece}`}
+                    >
+                      {pieceSymbol(piece)}
+                    </button>
+                  ))}
+                  <button className={editTool === "erase" ? "active" : ""} onClick={() => setEditTool("erase")} aria-label="Erase piece">
+                    ×
+                  </button>
+                </div>
+                <div className="button-row editor-actions">
+                  <button
+                    onClick={() => {
+                      setEditBoard(boardPositionFromFen(START_FEN));
+                      setExploreAnalysis(null);
+                    }}
+                  >
+                    Start
+                  </button>
+                  <button
+                    onClick={() => {
+                      setEditBoard({});
+                      setExploreAnalysis(null);
+                    }}
+                  >
+                    Clear
+                  </button>
+                  <button onClick={() => void analyzeCurrentPosition(editFen, "explore")} disabled={positionAnalyzing}>
+                    {positionAnalyzing ? <Loader2 className="spin" size={16} /> : <BarChart3 size={16} />}
+                    Analyze
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+
           <div className="panel game-list">
             <div className="panel-title-row">
               <h2>Games</h2>
@@ -462,10 +616,21 @@ export function App() {
         <section className="board-area">
           <div className="board-wrap">
             <Chessboard
-              position={position}
+              position={boardPosition}
               boardWidth={boardSize}
               arePiecesDraggable
+              dropOffBoardAction={editMode ? "trash" : "snapback"}
               onPieceDrop={onPieceDrop}
+              onPieceDropOffBoard={(sourceSquare) => {
+                if (!editMode) return;
+                setEditBoard((board) => {
+                  const next = { ...board };
+                  delete next[sourceSquare];
+                  return next;
+                });
+                setExploreAnalysis(null);
+                setSelectedSquare(null);
+              }}
               onPieceClick={(_, square) => onSquareClick(square)}
               onSquareClick={onSquareClick}
               customArrows={arrows}
@@ -583,12 +748,12 @@ export function App() {
               {analyzing ? `Analyzing ${progress}` : "Analyze Game"}
             </button>
 
-            <button className="secondary" onClick={() => analyzeCurrentPosition()} disabled={positionAnalyzing || !parsed}>
+            <button className="secondary" onClick={() => analyzeCurrentPosition()} disabled={positionAnalyzing || (!parsed && !editMode)}>
               {positionAnalyzing ? <Loader2 className="spin" size={18} /> : <BarChart3 size={18} />}
               {positionAnalyzing ? "Analyzing Position" : "Analyze Position"}
             </button>
 
-            {exploreFen && (
+            {exploreFen && !editMode && (
               <button className="link-button" onClick={() => goToPly(currentPly)}>
                 Return to game position
               </button>
@@ -623,12 +788,12 @@ export function App() {
           </div>
 
           <div className="panel">
-            <h2>{exploreFen ? "Exploration Line" : activeReview ? `${activeReview.moveNumber}${activeReview.color === "b" ? "..." : "."} ${activeReview.san}` : "Current Position"}</h2>
+            <h2>{editMode ? "Edited Position" : exploreFen ? "Exploration Line" : activeReview ? `${activeReview.moveNumber}${activeReview.color === "b" ? "..." : "."} ${activeReview.san}` : "Current Position"}</h2>
             <div className={`classification ${!exploreFen ? activeReview?.label?.toLowerCase() ?? "" : ""}`}>
-              {!exploreFen && activeReview?.label && <CategoryIcon label={activeReview.label} size={15} />}
-              {exploreFen ? "Custom" : activeReview?.label ?? "Not analyzed"}
+              {!editMode && !exploreFen && activeReview?.label && <CategoryIcon label={activeReview.label} size={15} />}
+              {editMode ? "Editor" : exploreFen ? "Custom" : activeReview?.label ?? "Not analyzed"}
             </div>
-            <p className="coach">{exploreFen ? "You are off the game line. Use Analyze Position or make more moves to keep exploring with Stockfish." : explainMove(activeReview)}</p>
+            <p className="coach">{editMode ? "Set up any legal position, choose whose turn it is, then run Stockfish analysis." : exploreFen ? "You are off the game line. Use Analyze Position or make more moves to keep exploring with Stockfish." : explainMove(activeReview)}</p>
             {!exploreFen && activeReview && ["Mistake", "Miss", "Blunder"].includes(activeReview.label ?? "") && (
               <button className="secondary retry-button" onClick={() => retryMove(activeReview)}>
                 Retry this move
@@ -684,6 +849,244 @@ function tryMove(chess: Chess, from: Square, to: Square) {
   } catch {
     return null;
   }
+}
+
+function boardPositionFromFen(fen: string): BoardPosition {
+  const board: BoardPosition = {};
+  const placement = fen.split(" ")[0] ?? "";
+  const rows = placement.split("/");
+
+  rows.forEach((row, rowIndex) => {
+    let fileIndex = 0;
+    for (const char of row) {
+      if (/\d/.test(char)) {
+        fileIndex += Number(char);
+        continue;
+      }
+
+      const square = `${"abcdefgh"[fileIndex]}${8 - rowIndex}` as Square;
+      const piece = pieceFromFenChar(char);
+      if (piece) board[square] = piece;
+      fileIndex += 1;
+    }
+  });
+
+  return board;
+}
+
+function fenFromBoardPosition(board: BoardPosition, turn: "w" | "b") {
+  const rows: string[] = [];
+  for (let rank = 8; rank >= 1; rank -= 1) {
+    let row = "";
+    let empty = 0;
+    for (const file of "abcdefgh") {
+      const piece = board[`${file}${rank}` as Square];
+      if (!piece) {
+        empty += 1;
+        continue;
+      }
+
+      if (empty) {
+        row += String(empty);
+        empty = 0;
+      }
+      row += fenCharFromPiece(piece);
+    }
+    rows.push(row + (empty ? String(empty) : ""));
+  }
+
+  return `${rows.join("/")} ${turn} - - 0 1`;
+}
+
+function applyEditTool(board: BoardPosition, square: Square, tool: Piece | "erase") {
+  const next = { ...board };
+  if (tool === "erase") {
+    delete next[square];
+  } else {
+    next[square] = tool;
+  }
+  return next;
+}
+
+function moveEditPiece(board: BoardPosition, from: Square, to: Square) {
+  const piece = board[from];
+  if (!piece) return board;
+  if ((piece === "wK" || piece === "bK") && board[to] === `${piece[0]}R` && canCastleEditor(board, from, to)) {
+    return castleEditorBoard(board, from, to, piece);
+  }
+  const next = { ...board, [to]: piece };
+  delete next[from];
+  return next;
+}
+
+function editMoveTargets(board: BoardPosition, square: Square | null, turn: "w" | "b") {
+  if (!square) return [];
+  const piece = board[square];
+  if (!piece || piece[0] !== turn) return [];
+
+  const { file, rank } = squareParts(square);
+  const color = piece[0] as "w" | "b";
+  const type = piece[1];
+  const targets: Square[] = [];
+  const add = (target: Square) => {
+    const occupant = board[target];
+    if (!occupant || occupant[0] !== color) targets.push(target);
+  };
+  const addStep = (df: number, dr: number) => {
+    const target = squareFromParts(file + df, rank + dr);
+    if (target) add(target);
+  };
+  const addRay = (df: number, dr: number) => {
+    let nextFile = file + df;
+    let nextRank = rank + dr;
+    while (true) {
+      const target = squareFromParts(nextFile, nextRank);
+      if (!target) break;
+      const occupant = board[target];
+      if (occupant) {
+        if (occupant[0] !== color) targets.push(target);
+        break;
+      }
+      targets.push(target);
+      nextFile += df;
+      nextRank += dr;
+    }
+  };
+
+  if (type === "P") {
+    const direction = color === "w" ? 1 : -1;
+    const one = squareFromParts(file, rank + direction);
+    if (one && !board[one]) {
+      targets.push(one);
+      const startRank = color === "w" ? 2 : 7;
+      const two = squareFromParts(file, rank + direction * 2);
+      if (rank === startRank && two && !board[two]) targets.push(two);
+    }
+    for (const df of [-1, 1]) {
+      const target = squareFromParts(file + df, rank + direction);
+      if (target && board[target] && board[target]?.[0] !== color) targets.push(target);
+    }
+  }
+
+  if (type === "N") {
+    for (const [df, dr] of [[1, 2], [2, 1], [2, -1], [1, -2], [-1, -2], [-2, -1], [-2, 1], [-1, 2]]) {
+      addStep(df, dr);
+    }
+  }
+
+  if (type === "B" || type === "Q") {
+    for (const [df, dr] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) addRay(df, dr);
+  }
+
+  if (type === "R" || type === "Q") {
+    for (const [df, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) addRay(df, dr);
+  }
+
+  if (type === "K") {
+    for (const [df, dr] of [[1, 1], [1, 0], [1, -1], [0, 1], [0, -1], [-1, 1], [-1, 0], [-1, -1]]) {
+      addStep(df, dr);
+    }
+    for (const rookSquare of sameRankRooks(board, square, color)) {
+      if (canCastleEditor(board, square, rookSquare)) targets.push(rookSquare);
+    }
+  }
+
+  return targets;
+}
+
+function sameRankRooks(board: BoardPosition, kingSquare: Square, color: "w" | "b") {
+  const { rank } = squareParts(kingSquare);
+  return Object.entries(board)
+    .filter((entry): entry is [Square, Piece] => Boolean(entry[1]))
+    .filter(([square, piece]) => piece === `${color}R` && squareParts(square).rank === rank)
+    .map(([square]) => square);
+}
+
+function canCastleEditor(board: BoardPosition, kingSquare: Square, rookSquare: Square) {
+  const king = board[kingSquare];
+  const rook = board[rookSquare];
+  if (!king || !rook || king[1] !== "K" || rook !== `${king[0]}R`) return false;
+  const kingParts = squareParts(kingSquare);
+  const rookParts = squareParts(rookSquare);
+  if (kingParts.rank !== rookParts.rank) return false;
+  const step = rookParts.file > kingParts.file ? 1 : -1;
+  for (let file = kingParts.file + step; file !== rookParts.file; file += step) {
+    const between = squareFromParts(file, kingParts.rank);
+    if (between && board[between]) return false;
+  }
+  return true;
+}
+
+function castleEditorBoard(board: BoardPosition, kingSquare: Square, rookSquare: Square, king: Piece) {
+  const next = { ...board };
+  const { rank, file: kingFile } = squareParts(kingSquare);
+  const rookFile = squareParts(rookSquare).file;
+  const kingTarget = squareFromParts(rookFile > kingFile ? 6 : 2, rank);
+  const rookTarget = squareFromParts(rookFile > kingFile ? 5 : 3, rank);
+  if (!kingTarget || !rookTarget) return board;
+  delete next[kingSquare];
+  delete next[rookSquare];
+  next[kingTarget] = king;
+  next[rookTarget] = `${king[0]}R` as Piece;
+  return next;
+}
+
+function squareParts(square: Square) {
+  return {
+    file: "abcdefgh".indexOf(square[0]),
+    rank: Number(square[1])
+  };
+}
+
+function squareFromParts(file: number, rank: number): Square | null {
+  if (file < 0 || file > 7 || rank < 1 || rank > 8) return null;
+  return `${"abcdefgh"[file]}${rank}` as Square;
+}
+
+function turnFromFen(fen: string): "w" | "b" {
+  return fen.split(" ")[1] === "b" ? "b" : "w";
+}
+
+function validateFenForAnalysis(fen: string) {
+  const board = boardPositionFromFen(fen);
+  const pieces = Object.values(board);
+  if (!pieces.includes("wK") || !pieces.includes("bK")) return "Add both kings before analyzing an edited position.";
+  try {
+    new Chess(fen);
+    return "";
+  } catch {
+    return "This edited position is not legal enough for Stockfish. Check the kings and side to move.";
+  }
+}
+
+function pieceFromFenChar(char: string): Piece | null {
+  const color = char === char.toUpperCase() ? "w" : "b";
+  const type = char.toUpperCase();
+  if (!["K", "Q", "R", "B", "N", "P"].includes(type)) return null;
+  return `${color}${type}` as Piece;
+}
+
+function fenCharFromPiece(piece: Piece) {
+  const type = piece[1];
+  return piece[0] === "w" ? type : type.toLowerCase();
+}
+
+function pieceSymbol(piece: Piece) {
+  const symbols: Record<Piece, string> = {
+    wP: "♙",
+    wN: "♘",
+    wB: "♗",
+    wR: "♖",
+    wQ: "♕",
+    wK: "♔",
+    bP: "♟",
+    bN: "♞",
+    bB: "♝",
+    bR: "♜",
+    bQ: "♛",
+    bK: "♚"
+  };
+  return symbols[piece];
 }
 
 function bestMoveArrows(analysis?: PositionAnalysis | null, hoveredMove?: string | null): Arrow[] {
